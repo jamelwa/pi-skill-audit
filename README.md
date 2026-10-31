@@ -1,8 +1,11 @@
 # pi-skill-audit
 
-A Pi extension that reviews agent skills for possible conversion into tools or hybrid workflows. It compares repeatability, input/output clarity, required judgment, and possible side effects. The result is a starting point for human review—not a tool generator or a safety approval.
+A Pi extension with two related commands:
 
-Use your current Pi chat model, TypeSafe's Jev classifier, or compare both on the same skill snapshots.
+- `/skill-audit` reviews existing skills for possible conversion into tools or hybrid workflows, using your current Pi chat model, TypeSafe's Jev classifier, or both.
+- `/skill-review` reviews the current session for a genuinely reusable procedure that might deserve a new skill, using your current Pi chat model.
+
+Both are advisory. Neither proves safety or verification, and neither acts automatically.
 
 ## Install
 
@@ -43,6 +46,22 @@ You can also specify an action, mode, and a path to a skill directory or `SKILL.
 `scan` is local only. Paths are relative to Pi's working directory. Without a path, selection uses Pi's loaded skills. A run is limited to 20 skills, each at most 96 KiB; choose an individual skill or a narrower directory for larger collections. Directory scanning ignores symlinks and common dependency directories; it stops descending when it finds a skill root. Only `SKILL.md` is inspected—not scripts or referenced files. Skills requiring those files may be classified incorrectly.
 
 The report is displayed in a Pi editor dialog. Closing the dialog does not save edits. You can then choose to save the original report as Markdown or JSON. Saving creates a new file with restrictive permissions and refuses to overwrite an existing file. Saved reports can contain paths, skill excerpts, and model output: review them before sharing or committing.
+
+## Review a session for a new skill
+
+```text
+/skill-review
+```
+
+This is an explicit command, not an automatic session-end hook. It:
+
+1. Extracts up to the latest 32,000 characters of user and assistant **text** from the current session branch. Tool results and arguments, thinking, images, shell output, and abandoned branches are omitted. The transcript can therefore lack important evidence.
+2. Opens the extracted text for you to review and redact. It also reads all currently loaded skill files locally so their names, descriptions, and instructions can be checked for overlap. An unreadable skill, any file over 128 KiB, or a combined inventory over 512 KiB stops the review rather than silently omitting skills.
+3. Shows the complete outgoing payload and selected Pi model. **The selected transcript and full loaded skill instructions are sent to that model's provider only after confirmation.** Cancel if any content should not be shared. The model may be remote. Edits to this final preview are ignored; redact the transcript in the preceding editor.
+4. Requests either no skill or one candidate. Candidates must cite exact transcript excerpts for both procedure and verification. Matching a quote is not independent proof that the outcome was verified, and model-based overlap detection can miss duplicates. Only loaded skills are compared; check other skill locations yourself.
+5. Shows its rationale, evidence, and a proposed `SKILL.md` for review. You may edit the body. If and only if you explicitly approve, it creates a new personal skill at `~/.pi/agent/skills/<name>/SKILL.md` (or under `PI_CODING_AGENT_DIR/skills`). Existing paths are never overwritten. Run `/reload` after creation.
+
+The command does not execute the procedure, create scripts, change existing skills, or publish files. Check the evidence, actual test results, overlap, safety boundaries, and sensitive content yourself before approving a draft. If model output is invalid, the inventory changes during review, or any step is cancelled, no skill is created. This command uses the current Pi **chat model**, not Jev: Jev alone does not generate a draft. Provider charges may apply.
 
 ## Model setup
 

@@ -30,8 +30,22 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(data)
         elif self.path.endswith("chat/completions"):
-            assert "synthetic skill" in json.dumps(body)
-            text = json.dumps({"dimensions": GOOD, "evidence": ["synthetic skill"], "boundary": "Automate local processing."})
+            request = json.dumps(body)
+            if 'bounded review' in request:
+                assert 'synthetic skill' in request
+                text = json.dumps({
+                    'decision': 'candidate', 'reason': 'A distinct verified synthetic procedure.',
+                    'name': 'fixture-check', 'description': 'Check a synthetic fixture when testing.',
+                    'body': '## Steps\nRun the synthetic fixture.\n\n## Validation\nCheck the result.',
+                    'evidence': [
+                        {'kind': 'procedure', 'quote': 'Run the synthetic fixture and inspect the output.'},
+                        {'kind': 'verification', 'quote': 'The synthetic fixture passed verification.'},
+                    ],
+                })
+            elif 'synthetic skill' in request:
+                text = json.dumps({"dimensions": GOOD, "evidence": ["synthetic skill"], "boundary": "Automate local processing."})
+            else:
+                text = 'The synthetic fixture passed verification.'
             chunks = [
                 {"id": "mock", "object": "chat.completion.chunk", "created": 1, "model": "mock", "choices": [{"index": 0, "delta": {"role": "assistant", "content": text}, "finish_reason": None}]},
                 {"id": "mock", "object": "chat.completion.chunk", "created": 1, "model": "mock", "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]},
@@ -108,7 +122,33 @@ def main():
                     assert event.get('success'), event
                     break
             assert seen_report, 'No report displayed'
-            print('Pi RPC smoke test passed: discovery, consent, mock LLM and Jev, report.')
+            send({'id': 'session', 'type': 'prompt', 'message': 'Run the synthetic fixture and inspect the output.'})
+            while True:
+                event = get()
+                if event.get('type') == 'agent_settled':
+                    break
+            send({'id': 'review', 'type': 'prompt', 'message': '/skill-review'})
+            seen_draft = False
+            while True:
+                event = get()
+                if event.get('type') == 'extension_ui_request':
+                    method = event['method']
+                    if method == 'editor':
+                        if event['title'].startswith('Review and edit proposed'):
+                            assert 'fixture-check' in event['prefill']
+                            seen_draft = True
+                        send({'type': 'extension_ui_response', 'id': event['id'], 'value': event['prefill']})
+                    elif method == 'confirm':
+                        send({'type': 'extension_ui_response', 'id': event['id'], 'confirmed': True})
+                    elif method == 'notify' and event.get('notifyType') == 'error':
+                        raise AssertionError(event['message'])
+                if event.get('id') == 'review' and event.get('type') == 'response':
+                    assert event.get('success'), event
+                    break
+            assert seen_draft, 'No skill draft displayed'
+            created = agent / 'skills' / 'fixture-check' / 'SKILL.md'
+            assert created.exists() and 'fixture-check' in created.read_text()
+            print('Pi RPC smoke test passed: audit and session review with mock providers and isolated skill creation.')
         finally:
             proc.terminate()
             proc.wait(timeout=5)

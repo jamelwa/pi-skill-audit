@@ -59,7 +59,7 @@ test('report escapes terminal control characters and reports failures', () => {
 
 function setup(root, confirms, mode, opts = {}) {
   let handler;
-  extension({ registerCommand(name, options) { assert.equal(name, 'skill-audit'); handler = options.handler; } });
+  extension({ registerCommand(name, options) { if (name === 'skill-audit') handler = options.handler; } });
   const calls = [], notices = [], editors = [];
   const ctx = {
     hasUI: true, cwd: root, model: { provider: 'example', id: 'model' },
