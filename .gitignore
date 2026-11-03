@@ -4,3 +4,5 @@ node_modules/
 .env.*
 *.log
 skill-audit-report.*
+extras/auto-session-skill/config.json
+extras/auto-session-skill/.config-*.json
