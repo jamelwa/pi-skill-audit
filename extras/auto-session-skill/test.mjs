@@ -36,6 +36,44 @@ test('thresholds and safe boundary behavior', () => {
   }
 });
 
+test('sensitivity thresholds and safety guidance', async () => {
+  for (const [level, users, tools, single] of [['low', 3, 50, 80], ['medium', 2, 25, 45], ['high', 2, 12, 20]]) {
+    for (const [u, t, expected] of [[users - 1, tools, false], [users, tools - 1, false], [users, tools, true], [1, single - 1, false], [1, single, true]]) {
+      const h = harness(branch(u, t));
+      await h.commands['auto-skill'].handler(`sensitivity ${level}`, h.ctx);
+      const result = h.events.agent_before_settle(h.event, h.ctx);
+      assert.equal(Boolean(result), expected, `${level}: ${u} users, ${t} tools`);
+      if (result) {
+        assert.match(result.entries[1].content, /repeated, complex, tedious or error-prone/);
+        assert.match(result.entries[1].content, /successfully verified outcome/);
+        assert.match(result.entries[1].content, /Repetition or difficulty alone is not proof/);
+      }
+    }
+  }
+});
+
+test('sensitivity and enabled state persist independently on a branch', async () => {
+  const h = harness(branch(2, 15));
+  await h.commands['auto-skill'].handler('off', h.ctx);
+  await h.commands['auto-skill'].handler('sensitivity high', h.ctx);
+  assert.equal(h.events.agent_before_settle(h.event, h.ctx), undefined);
+  await h.commands['auto-skill'].handler('status', h.ctx);
+  assert.match(h.notices.at(-1)[0], /off, sensitivity high/);
+  await h.commands['auto-skill'].handler('on', h.ctx);
+  assert.ok(h.events.agent_before_settle(h.event, h.ctx));
+  await h.commands['auto-skill'].handler('status', h.ctx);
+  assert.match(h.notices.at(-1)[0], /on, sensitivity high.*12 tools \+ 2 messages, or 20 tools/);
+  const count = h.appended.length;
+  await h.commands['auto-skill'].handler('sensitivity extreme', h.ctx);
+  assert.equal(h.appended.length, count);
+  assert.match(h.notices.at(-1)[0], /Usage:/);
+  // Settings restored from old on/off entries default to medium, including after resume.
+  const old = harness([...branch(2, 15), { type: 'custom', customType: 'auto-session-skill-setting', data: { enabled: true } }]);
+  assert.equal(old.events.agent_before_settle(old.event, old.ctx), undefined);
+  await old.commands['auto-skill'].handler('status', old.ctx);
+  assert.match(old.notices.at(-1)[0], /on, sensitivity medium/);
+});
+
 test('skips errors, non-interactive mode, queued work, and other continuations', () => {
   for (const mutate of [
     h => h.event.outcome = 'aborted', h => h.event.outcome = 'error',

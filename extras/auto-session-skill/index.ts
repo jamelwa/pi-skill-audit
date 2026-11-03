@@ -5,9 +5,12 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 // Branch-local checkpoints prevent repeated reviews on reload or /tree navigation.
 const CHECKPOINT = "auto-session-skill-review";
 const SETTING = "auto-session-skill-setting";
-const MIN_TOOLS = 25;
-const MIN_USERS = 2;
-const SINGLE_REQUEST_TOOLS = 45;
+const LEVELS = {
+  low: { tools: 50, users: 3, single: 80 },
+  medium: { tools: 25, users: 2, single: 45 },
+  high: { tools: 12, users: 2, single: 20 },
+} as const;
+type Sensitivity = keyof typeof LEVELS;
 
 function countSinceCheckpoint(branch: readonly any[]) {
   let tools = 0, users = 0;
@@ -21,19 +24,26 @@ function countSinceCheckpoint(branch: readonly any[]) {
   return { tools, users };
 }
 
-function enabledFor(branch: readonly any[]) {
+function settingsFor(branch: readonly any[]): { enabled: boolean; sensitivity: Sensitivity } {
+  let enabled: boolean | undefined;
+  let sensitivity: Sensitivity | undefined;
   for (let i = branch.length - 1; i >= 0; i--) {
     const entry = branch[i];
-    if (entry.type === "custom" && entry.customType === SETTING) return entry.data?.enabled !== false;
+    if (entry.type !== "custom" || entry.customType !== SETTING) continue;
+    if (enabled === undefined && typeof entry.data?.enabled === "boolean") enabled = entry.data.enabled;
+    const level = entry.data?.sensitivity;
+    if (sensitivity === undefined && (level === "low" || level === "medium" || level === "high")) sensitivity = level;
+    if (enabled !== undefined && sensitivity !== undefined) break;
   }
-  return true;
+  return { enabled: enabled ?? true, sensitivity: sensitivity ?? "medium" };
 }
 
 function instruction() {
   const skills = join(process.env.PI_CODING_AGENT_DIR || join(homedir(), ".pi", "agent"), "skills");
   return `Automatic current-session skill review. This is a bounded review, not a new user task.\n` +
     `Review only the current conversation and its available context. A lengthy session or many tool calls is merely a trigger, not evidence of a useful skill or task completion. ` +
-    `Create or update a skill only if there is a clearly reusable, substantial procedure with hard-won, evidence-backed lessons from a successfully verified outcome. ` +
+    `Look for repeated, complex, tedious or error-prone steps and hard-won lessons that could form a reusable procedure. ` +
+    `Create or update a skill only if there is a clearly reusable, substantial procedure with evidence-backed lessons from a successfully verified outcome. Repetition or difficulty alone is not proof of usefulness or verification. ` +
     `Difficulties, failed attempts, and user corrections are useful only when the eventual resolution or workaround is supported by evidence; distinguish failed approaches from what worked. ` +
     `If work is still underway, blocked, unverified, sensitive, one-off, or no genuinely useful lesson emerged, change nothing. Never infer completion merely because the agent stopped.\n\n` +
     `Before changing anything, check existing available skills and read any potentially relevant SKILL.md for overlap. ` +
@@ -55,9 +65,11 @@ export default function (pi: ExtensionAPI) {
     if (ctx.mode !== "tui" || event.outcome !== "completed" || event.continue ||
         event.context.pendingMessages.length || ctx.hasPendingMessages()) return;
     const branch = ctx.sessionManager.getBranch();
-    if (!enabledFor(branch)) return;
+    const { enabled, sensitivity } = settingsFor(branch);
+    if (!enabled) return;
     const { tools, users } = countSinceCheckpoint(branch);
-    if (tools < SINGLE_REQUEST_TOOLS && (tools < MIN_TOOLS || users < MIN_USERS)) return;
+    const threshold = LEVELS[sensitivity];
+    if (tools < threshold.single && (tools < threshold.tools || users < threshold.users)) return;
     return {
       entries: [
         { type: "custom", customType: CHECKPOINT, data: { tools, users } },
@@ -68,23 +80,30 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.registerCommand("auto-skill", {
-    description: "Create or improve skills from this session: status, on, off, or now",
+    description: "Review session skills: status, on, off, now, or sensitivity low|medium|high",
     handler: async (args, ctx) => {
       const cmd = args.trim().toLowerCase() || "status";
       if (cmd === "status") {
         const branch = ctx.sessionManager.getBranch();
         const { tools, users } = countSinceCheckpoint(branch);
-        ctx.ui.notify(`Auto-skill ${enabledFor(branch) ? "on" : "off"} (this branch); since last review: ${tools} tool results, ${users} user messages. Trigger: ${MIN_TOOLS} tools + ${MIN_USERS} messages, or ${SINGLE_REQUEST_TOOLS} tools.`, "info");
+        const { enabled, sensitivity } = settingsFor(branch);
+        const threshold = LEVELS[sensitivity];
+        ctx.ui.notify(`Auto-skill ${enabled ? "on" : "off"}, sensitivity ${sensitivity} (this branch); since last review: ${tools} tool results, ${users} user messages. Trigger: ${threshold.tools} tools + ${threshold.users} messages, or ${threshold.single} tools.`, "info");
       } else if (cmd === "on" || cmd === "off") {
         pi.appendEntry(SETTING, { enabled: cmd === "on" });
         ctx.ui.notify(`Auto-skill ${cmd} for this session branch.`, "info");
+      } else if (/^sensitivity\s+(low|medium|high)$/.test(cmd)) {
+        const sensitivity = cmd.split(/\s+/)[1] as Sensitivity;
+        pi.appendEntry(SETTING, { sensitivity });
+        const threshold = LEVELS[sensitivity];
+        ctx.ui.notify(`Auto-skill sensitivity ${sensitivity} for this session branch: ${threshold.tools} tools + ${threshold.users} messages, or ${threshold.single} tools.`, "info");
       } else if (cmd === "now") {
         if (ctx.mode !== "tui") { ctx.ui.notify("Manual skill review requires interactive mode.", "warning"); return; }
         if (!ctx.isIdle() || ctx.hasPendingMessages()) { ctx.ui.notify("Wait for current and queued work to finish before reviewing.", "warning"); return; }
         pi.appendEntry(CHECKPOINT, { manual: true });
         pi.sendMessage({ customType: CHECKPOINT, content: instruction(), display: true }, { triggerTurn: true });
       } else {
-        ctx.ui.notify("Usage: /auto-skill [status|on|off|now]", "warning");
+        ctx.ui.notify("Usage: /auto-skill [status|on|off|now|sensitivity low|medium|high]", "warning");
       }
     },
   });
