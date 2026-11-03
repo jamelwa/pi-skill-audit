@@ -5,7 +5,7 @@ A Pi extension with two related commands:
 - `/skill-audit` reviews existing skills for possible conversion into tools or hybrid workflows, using your current Pi chat model, TypeSafe's Jev classifier, or both.
 - `/skill-review` reviews the current session for a genuinely reusable procedure that might deserve a new skill, using your current Pi chat model.
 
-Both are advisory. Neither proves safety or verification, and neither acts automatically.
+Both are advisory. Neither proves safety or verification, and neither acts automatically. An independent, opt-in [automatic session reviewer](extras/auto-session-skill/README.md) is also available; it has different behavior and safety limitations and is not enabled by installing this package.
 
 ## Install
 
@@ -103,7 +103,7 @@ With Node.js 22.18 or later:
 npm test
 ```
 
-Tests use synthetic skills and mocked provider responses. An optional end-to-end smoke test exercises Pi's RPC interface and both provider paths against a localhost-only mock server:
+Tests use synthetic skills and mocked provider responses. Test the opt-in automatic reviewer separately with `node --test extras/auto-session-skill/test.mjs`. An optional end-to-end smoke test exercises Pi's RPC interface and both provider paths against a localhost-only mock server:
 
 ```sh
 python3 tests/rpc-smoke.py

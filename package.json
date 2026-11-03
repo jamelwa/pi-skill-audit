@@ -7,7 +7,7 @@
   "keywords": ["pi-package", "pi-extension", "agent-skills"],
   "pi": { "extensions": ["./extensions/skill-audit/index.ts"] },
   "peerDependencies": { "@earendil-works/pi-coding-agent": "*" },
-  "scripts": { "test": "node --test tests/*.test.js" },
+  "scripts": { "test": "node --test tests/*.test.js extras/auto-session-skill/test.mjs" },
   "engines": { "node": ">=22.18" },
   "license": "MIT"
 }
