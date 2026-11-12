@@ -43,6 +43,7 @@ test('discover and snapshot enforce bounds and do not traverse nested skill root
     await writeFile(join(root, 'node_modules', 'ignored', 'SKILL.md'), 'ignored');
     await symlink(join(root, 'a'), join(root, 'link'));
     assert.deepEqual(await discover(root), [join(root, 'a', 'SKILL.md')]);
+    await assert.rejects(snapshot(Array(21).fill(join(root, 'missing', 'SKILL.md'))), /Limit is 20 skills/);
     assert.equal((await snapshot(await discover(root)))[0].text, 'one');
     await assert.rejects(discover(join(root, 'link')), /Symlink/);
     await writeFile(join(root, 'a', 'SKILL.md'), 'x'.repeat(MAX_SKILL_BYTES + 1));
@@ -67,7 +68,7 @@ function setup(root, confirms, mode, opts = {}) {
     ui: {
       select: async (_title, options) => options[0],
       confirm: async (title, text) => { calls.push({ title, text }); return confirms.shift() ?? false; },
-      editor: async (title, text) => { editors.push({ title, text }); },
+      editor: async (title, text) => { editors.push({ title, text }); return opts.cancelPreview && title.startsWith('Review files and providers') ? undefined : text; },
       input: async () => 'report.md',
       notify: (text) => notices.push(text),
     },
@@ -77,8 +78,145 @@ function setup(root, confirms, mode, opts = {}) {
       classify: async (_model, context) => { calls.push({ jev: context }); return { stopReason: 'stop', answers }; },
     },
   };
-  return { run: () => handler(`run --mode ${mode}`, ctx), calls, notices, editors, ctx };
+  return { run: (args = `run --mode ${mode}`) => handler(args, ctx), calls, notices, editors, ctx };
 }
+
+async function fixtureSkills(root, count = 41) {
+  const skills = [];
+  for (let i = 1; i <= count; i++) {
+    const name = `skill-${String(i).padStart(2, '0')}`;
+    const directory = join(root, name);
+    await mkdir(directory);
+    const filePath = join(directory, 'SKILL.md');
+    await writeFile(filePath, `local read ${i}`);
+    skills.push({ name, filePath });
+  }
+  return skills;
+}
+
+test('large catalogs audit only the explicitly chosen batch', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'skill-audit-'));
+  try {
+    const skills = await fixtureSkills(root);
+    const run = setup(root, [true, false], 'compare');
+    // Unselected paths need not even be readable; only the approved batch is snapshotted.
+    run.ctx.getSystemPromptOptions = () => ({ skills: skills.map((skill, i) =>
+      i >= 20 && i < 40 ? skill : { ...skill, filePath: join(root, 'missing', skill.name, 'SKILL.md') }) });
+    const selections = [];
+    run.ctx.ui.select = async (title, options) => {
+      selections.push({ title, options });
+      return selections.length === 1 ? options[0] : options[1];
+    };
+    await run.run();
+    assert.equal(selections.length, 2);
+    assert.match(selections[0].title, /41 loaded/);
+    assert.match(selections[1].title, /max 20 per audit/);
+    assert.deepEqual(selections[1].options, [
+      'Batch 1/3: 1–20 of 41 skills', 'Batch 2/3: 21–40 of 41 skills', 'Batch 3/3: 41–41 of 41 skills',
+    ]);
+    const expected = Array.from({ length: 20 }, (_, i) => `local read ${i + 21}`);
+    assert.deepEqual(run.calls.filter(c => c.llm).map(c => JSON.parse(c.llm.messages[0].content[0].text).skill), expected);
+    assert.deepEqual(run.calls.filter(c => c.jev).map(c => c.jev.state.skill), expected);
+    assert.equal(run.calls.filter(c => c.title === 'Send selected skill contents?').length, 1);
+    assert.match(run.editors[0].text, /skill-21/);
+    assert.doesNotMatch(run.editors[0].text, /missing/);
+    assert.deepEqual(run.notices.filter(n => n.startsWith('skill-audit:')), []);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('batch boundaries retain the cap and never automatically run another batch', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'skill-audit-'));
+  try {
+    const skills = await fixtureSkills(root);
+    for (const [total, expectedRequests] of [[20, 20], [21, 1], [40, 20], [41, 1]]) {
+      const run = setup(root, [true, false], 'llm');
+      run.ctx.getSystemPromptOptions = () => ({ skills: skills.slice(0, total) });
+      const selections = [];
+      run.ctx.ui.select = async (title, options) => {
+        selections.push(title);
+        return selections.length === 1 ? options[0] : options.at(-1);
+      };
+      await run.run();
+      assert.equal(selections.length, total === 20 ? 1 : 2);
+      assert.equal(run.calls.filter(c => c.llm).length, expectedRequests, `${total} skills`);
+      assert.equal(run.calls.filter(c => c.title === 'Send selected skill contents?').length, 1);
+      assert.deepEqual(run.notices.filter(n => n.startsWith('skill-audit:')), []);
+    }
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('an individual skill remains selectable from a large catalog', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'skill-audit-'));
+  try {
+    const skills = await fixtureSkills(root, 21);
+    const run = setup(root, [true, false], 'llm');
+    run.ctx.getSystemPromptOptions = () => ({ skills });
+    let selections = 0;
+    run.ctx.ui.select = async (_title, options) => { selections++; return options.at(-1); };
+    await run.run();
+    assert.equal(selections, 1);
+    const calls = run.calls.filter(c => c.llm);
+    assert.equal(calls.length, 1);
+    assert.equal(JSON.parse(calls[0].llm.messages[0].content[0].text).skill, 'local read 21');
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('cancelling the catalog or batch picker stops before file reads and consent', async () => {
+  for (const cancelAt of [1, 2]) {
+    const run = setup('/synthetic-unreadable-catalog', [true], 'llm');
+    run.ctx.getSystemPromptOptions = () => ({ skills: Array.from({ length: 21 }, (_, i) =>
+      ({ name: `skill-${i}`, filePath: `/synthetic-unreadable-catalog/${i}/SKILL.md` })) });
+    let selections = 0;
+    run.ctx.ui.select = async (_title, options) => ++selections === cancelAt ? undefined : options[0];
+    await run.run();
+    assert.equal(selections, cancelAt);
+    assert.deepEqual(run.calls, []);
+    assert.deepEqual(run.editors, []);
+    assert.deepEqual(run.notices, []);
+  }
+});
+
+test('directory runs offer batches while directory scans retain the full inventory', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'skill-audit-'));
+  try {
+    await fixtureSkills(root, 21);
+    const run = setup(root, [true, false], 'llm');
+    const selections = [];
+    run.ctx.ui.select = async (title, options) => { selections.push(title); return options.at(-1); };
+    await run.run('run --mode llm .');
+    assert.equal(selections.length, 1);
+    assert.match(selections[0], /Choose one batch/);
+    assert.equal(run.calls.filter(c => c.llm).length, 1);
+    assert.equal(JSON.parse(run.calls.find(c => c.llm).llm.messages[0].content[0].text).skill, 'local read 21');
+    const scan = setup(root, [], 'llm');
+    scan.ctx.ui.select = async () => { throw Error('Directory scan must not request a batch'); };
+    await scan.run('scan .');
+    assert.match(scan.editors[0].title, /inventory \(21; no model call\)/);
+    assert.equal(scan.editors[0].text.split('\n').length, 21);
+    assert.deepEqual(scan.calls, []);
+    assert.deepEqual(scan.notices, []);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('selected batches still require preview submission and separate send consent', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'skill-audit-'));
+  try {
+    const skills = await fixtureSkills(root, 21);
+    for (const cancelPreview of [true, false]) {
+      const run = setup(root, [false], 'llm', { cancelPreview });
+      run.ctx.getSystemPromptOptions = () => ({ skills });
+      let selections = 0;
+      run.ctx.ui.select = async (_title, options) => ++selections === 1 ? options[0] : options.at(-1);
+      await run.run();
+      assert.equal(selections, 2);
+      assert.equal(run.editors.length, 1);
+      assert.match(run.editors[0].text, /skill-21/);
+      assert.doesNotMatch(run.editors[0].text, /skill-01/);
+      assert.equal(run.calls.filter(c => c.llm || c.jev).length, 0);
+      assert.equal(run.calls.filter(c => c.title === 'Send selected skill contents?').length, cancelPreview ? 0 : 1);
+    }
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
 
 test('command requires consent and compare sends identical snapshots without conversation history', async () => {
   const root = await mkdtemp(join(tmpdir(), 'skill-audit-'));
@@ -99,6 +237,19 @@ test('command requires consent and compare sends identical snapshots without con
     const again = setup(root, [true, true], 'compare');
     await again.run();
     assert.ok(again.notices.some((n) => n.includes('EEXIST')));
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('cancelling the file preview stops before consent or provider calls', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'skill-audit-'));
+  try {
+    await writeFile(join(root, 'SKILL.md'), 'local read');
+    const run = setup(root, [true, true], 'compare', { cancelPreview: true });
+    await run.run();
+    assert.equal(run.editors.length, 1);
+    assert.equal(run.calls.length, 0);
+    assert.equal(run.notices.length, 0);
+    await assert.rejects(readFile(join(root, 'report.md')), { code: 'ENOENT' });
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 

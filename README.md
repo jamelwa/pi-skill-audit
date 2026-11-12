@@ -31,7 +31,7 @@ In Pi:
 /skill-audit
 ```
 
-Choose one loaded skill or all loaded skills, then select **Current Pi model**, **Jev**, or **Compare both**. Review the listed files and destinations, and explicitly confirm before their contents are sent. No model call is made if you decline.
+Choose one loaded skill or **All loaded skills**. For more than 20 skills, the latter opens a batch picker showing each batch's range and the total count; choose one batch of at most 20. Then select **Current Pi model**, **Jev**, or **Compare both**. Review the listed files and destinations, submit the preview to continue, and explicitly confirm before their contents are sent. Preview edits are ignored; cancelling it ends the audit before the send-confirmation dialog. No model call is made if you cancel or decline.
 
 You can also specify an action, mode, and a path to a skill directory or `SKILL.md`:
 
@@ -43,7 +43,7 @@ You can also specify an action, mode, and a path to a skill directory or `SKILL.
 /skill-audit run --mode compare ./skills/example
 ```
 
-`scan` is local only. Paths are relative to Pi's working directory. Without a path, selection uses Pi's loaded skills. A run is limited to 20 skills, each at most 96 KiB; choose an individual skill or a narrower directory for larger collections. Directory scanning ignores symlinks and common dependency directories; it stops descending when it finds a skill root. Only `SKILL.md` is inspected—not scripts or referenced files. Skills requiring those files may be classified incorrectly.
+`scan` is local only and lists the full selected inventory without applying the audit batch limit. Paths are relative to Pi's working directory. Without a path, selection uses Pi's loaded skills. A run is limited to 20 skills, each at most 96 KiB. Directory paths with more than 20 skills also open the batch picker before any skill contents are read. Each invocation audits only the selected batch; it never automatically advances or uploads the rest. Run the command again to choose another batch, with a fresh preview and send confirmation. Cancelling either picker stops without a model call. Directory scanning ignores symlinks and common dependency directories; it stops descending when it finds a skill root. Only `SKILL.md` is inspected—not scripts or referenced files. Skills requiring those files may be classified incorrectly.
 
 The report is displayed in a Pi editor dialog. Closing the dialog does not save edits. You can then choose to save the original report as Markdown or JSON. Saving creates a new file with restrictive permissions and refuses to overwrite an existing file. Saved reports can contain paths, skill excerpts, and model output: review them before sharing or committing.
 
